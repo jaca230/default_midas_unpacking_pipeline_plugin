@@ -86,21 +86,28 @@ set(ROOT_DICTIONARY_INCLUDE_OPTIONS
     ${MIDAS_INCLUDE_FLAGS}
 )
 
-
-# Try to get include dirs from analysis_pipeline_stages_core
+# Get include dirs from analysis_pipeline_stages_core - handle generator expressions properly
 get_target_property(CORE_INCLUDE_DIRS AnalysisPipelineStagesCore::analysis_pipeline_stages_core INTERFACE_INCLUDE_DIRECTORIES)
 
 if(CORE_INCLUDE_DIRS AND NOT CORE_INCLUDE_DIRS STREQUAL "CORE_INCLUDE_DIRS-NOTFOUND")
     foreach(dir IN LISTS CORE_INCLUDE_DIRS)
-        # Skip generator expressions
-        if(NOT dir MATCHES "^\\$<")
+        # Handle BUILD_INTERFACE generator expressions
+        if(dir MATCHES "^\\$<BUILD_INTERFACE:(.+)>$")
+            set(actual_dir "${CMAKE_MATCH_1}")
+            if(EXISTS "${actual_dir}")
+                list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${actual_dir}")
+            else()
+                message(WARNING "Skipping non-existent core BUILD_INTERFACE path: ${actual_dir}")
+            endif()
+        # Handle regular paths (no generator expressions)
+        elseif(NOT dir MATCHES "^\\$<")
             if(EXISTS "${dir}")
-                message(STATUS "Adding core include path to ROOT dictionary: ${dir}")
                 list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
             else()
                 message(WARNING "Skipping non-existent core include path: ${dir}")
             endif()
         endif()
+        # Skip INSTALL_INTERFACE and other generator expressions as they're not relevant for build-time dictionary generation
     endforeach()
 endif()
 
