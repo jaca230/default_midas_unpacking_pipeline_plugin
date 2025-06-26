@@ -69,6 +69,8 @@ void DefaultMidasUnpackerStage::ProcessMidasEvent(TMEvent& event) {
     auto pdp = std::make_unique<PipelineDataProduct>();
     pdp->setName("event_json");
     pdp->setObject(std::move(jsonString));
+    pdp->addTag("unpacked_data");
+    pdp->addTag("built_by_default_midas_unpacker");
     getDataProductManager()->addOrUpdate("event_json", std::move(pdp));
 
     spdlog::debug("[{}] Created PipelineDataProduct for event_json", Name());
