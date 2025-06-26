@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 
-project(default_midas_unpacking_pipeline_plugin VERSION 1.0 LANGUAGES CXX)
+project(example_pipeline_plugin VERSION 1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -74,42 +74,30 @@ target_link_libraries(${PROJECT_NAME}
 # ROOT dictionary generation setup
 set(ROOT_LINKDEF ${CMAKE_CURRENT_SOURCE_DIR}/include/LinkDef.h)
 
-# Get the target's include directories
-get_target_property(CORE_INCLUDE_DIRS AnalysisPipelineStagesCore::analysis_pipeline_stages_core INTERFACE_INCLUDE_DIRECTORIES)
-
-# Handle case where CORE_INCLUDE_DIRS might be CORE_INCLUDE_DIRS-NOTFOUND
-if(CORE_INCLUDE_DIRS STREQUAL "CORE_INCLUDE_DIRS-NOTFOUND")
-    set(CORE_INCLUDE_DIRS "")
-endif()
-
 # Prepare MIDAS include flags for dictionary generation
 set(MIDAS_INCLUDE_FLAGS "")
 foreach(dir IN LISTS MIDASSYS_INCLUDE_DIRS)
   list(APPEND MIDAS_INCLUDE_FLAGS "-I${dir}")
 endforeach()
 
-set(ALL_INCLUDE_DIRS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CORE_INCLUDE_DIRS}
-    ${MIDASSYS_INCLUDE_DIRS}
+# For ROOT dictionary, only use concrete paths that exist at configure time
+set(ROOT_DICTIONARY_INCLUDE_OPTIONS
+    "-I${CMAKE_CURRENT_SOURCE_DIR}/include"
+    ${MIDAS_INCLUDE_FLAGS}
 )
 
-# Remove duplicates and empty entries
-list(REMOVE_DUPLICATES ALL_INCLUDE_DIRS)
-list(REMOVE_ITEM ALL_INCLUDE_DIRS "")
-
-message(STATUS "All include directories for ROOT dictionary: ${ALL_INCLUDE_DIRS}")
-
-set(ROOT_DICTIONARY_INCLUDE_OPTIONS "")
-foreach(dir IN LISTS ALL_INCLUDE_DIRS)
-    if(EXISTS "${dir}")
-        list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
-    else()
-        message(WARNING "Include directory does not exist: ${dir}")
-    endif()
-endforeach()
-
-message(STATUS "ROOT dictionary include options: ${ROOT_DICTIONARY_INCLUDE_OPTIONS}")
+# Try to get core include directories if available
+get_target_property(CORE_INCLUDE_DIRS AnalysisPipelineStagesCore::analysis_pipeline_stages_core INTERFACE_INCLUDE_DIRECTORIES)
+if(CORE_INCLUDE_DIRS AND NOT CORE_INCLUDE_DIRS STREQUAL "CORE_INCLUDE_DIRS-NOTFOUND")
+    foreach(dir IN LISTS CORE_INCLUDE_DIRS)
+        # Only add non-generator expression paths
+        if(NOT dir MATCHES "^\\$<")
+            if(EXISTS "${dir}")
+                list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
+            endif()
+        endif()
+    endforeach()
+endif()
 
 # ROOT dictionary generation with MIDAS includes and all stage headers
 ROOT_GENERATE_DICTIONARY(G__${PROJECT_NAME}
@@ -128,6 +116,9 @@ target_sources(${PROJECT_NAME} PRIVATE
 target_include_directories(${PROJECT_NAME}
     PRIVATE ${CMAKE_CURRENT_BINARY_DIR}  # generated headers
 )
+
+# Create alias target for CPM compatibility
+add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
 # Install targets and headers
 install(TARGETS ${PROJECT_NAME}
