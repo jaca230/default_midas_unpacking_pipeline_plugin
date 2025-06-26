@@ -10,7 +10,7 @@ BaseMidasUnpackerStage::~BaseMidasUnpackerStage() = default;
 void BaseMidasUnpackerStage::SetInput(std::any input) {
     // Try to cast std::any to TMEvent reference
     try {
-        TMEvent& event = std::any_cast<TMEvent&>(input);
+        TMEvent& event = std::any_cast<std::reference_wrapper<TMEvent>>(input).get();
         SetCurrentEvent(event);
     } catch (const std::bad_any_cast& e) {
         throw std::runtime_error("BaseMidasUnpackerStage::SetInput - input is not a TMEvent reference");
