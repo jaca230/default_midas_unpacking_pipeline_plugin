@@ -100,15 +100,13 @@ endforeach()
 # Link libraries including MIDAS static libs and CPM header-only targets if available
 target_link_libraries(${PROJECT_NAME}
   PUBLIC
-    AnalysisPipelineStagesCore::analysis_pipeline_stages_core
     ROOT::Core
     ROOT::RIO
     ROOT::Tree
     ROOT::Hist
-    $<$<TARGET_EXISTS:spdlog_header_only>:spdlog_header_only>
-    $<$<TARGET_EXISTS:nlohmann_json_header_only>:nlohmann_json_header_only>
-    $<$<NOT:$<TARGET_EXISTS:spdlog_header_only>>:spdlog::spdlog>
-    $<$<NOT:$<TARGET_EXISTS:nlohmann_json_header_only>>:nlohmann_json::nlohmann_json>
+    nlohmann_json_header_only
+    spdlog_header_only
+    AnalysisPipelineStagesCore::analysis_pipeline_stages_core
     ${MIDASSYS_LIB_DIR}/libmfe.a
     ${MIDASSYS_LIB_DIR}/libmidas.a
 )
