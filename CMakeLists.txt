@@ -7,6 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Suppress false-positive GCC warnings when top-level
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wno-stringop-overflow)
+  endif()
+endif()
+
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
@@ -24,9 +32,41 @@ set(MIDASSYS_INCLUDE_DIRS
 )
 set(MIDASSYS_LIB_DIR $ENV{MIDASSYS}/lib)
 
-# Find dependencies
-find_package(spdlog REQUIRED)
-find_package(nlohmann_json REQUIRED)
+# ------------------ CPM Setup ------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake)
+
+# spdlog (header-only)
+CPMAddPackage(
+  NAME spdlog
+  GITHUB_REPOSITORY gabime/spdlog
+  VERSION 1.13.0
+  OPTIONS "SPDLOG_BUILD_EXAMPLES OFF" "SPDLOG_BUILD_TESTS OFF" "SPDLOG_FMT_EXTERNAL OFF"
+  DOWNLOAD_ONLY YES
+)
+
+if(spdlog_ADDED)
+  add_library(spdlog_header_only INTERFACE)
+  target_include_directories(spdlog_header_only INTERFACE
+    $<BUILD_INTERFACE:${spdlog_SOURCE_DIR}/include>
+  )
+endif()
+
+# nlohmann_json (header-only)
+CPMAddPackage(
+  NAME nlohmann_json
+  GITHUB_REPOSITORY nlohmann/json
+  VERSION 3.11.3
+  DOWNLOAD_ONLY YES
+)
+
+if(nlohmann_json_ADDED)
+  add_library(nlohmann_json_header_only INTERFACE)
+  target_include_directories(nlohmann_json_header_only INTERFACE
+    $<BUILD_INTERFACE:${nlohmann_json_SOURCE_DIR}/include>
+  )
+endif()
+
+# Find other required packages
 find_package(AnalysisPipelineStagesCore REQUIRED)
 find_package(ROOT REQUIRED COMPONENTS Core RIO Tree Hist)
 include(${ROOT_USE_FILE})
@@ -41,15 +81,15 @@ list(FILTER ALL_STAGE_HEADERS EXCLUDE REGEX "LinkDef\\.h$")
 # Create shared library
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
-# Setup include directories including MIDAS
+# Setup include directories including MIDAS and analysis pipeline core
 target_include_directories(${PROJECT_NAME}
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-        $<TARGET_PROPERTY:AnalysisPipelineStagesCore::analysis_pipeline_stages_core,INTERFACE_INCLUDE_DIRECTORIES>
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    $<TARGET_PROPERTY:AnalysisPipelineStagesCore::analysis_pipeline_stages_core,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
-# Add MIDAS include directories
+# Add MIDAS include directories (both build and install interface)
 foreach(dir IN LISTS MIDASSYS_INCLUDE_DIRS)
   target_include_directories(${PROJECT_NAME} PUBLIC
     $<BUILD_INTERFACE:${dir}>
@@ -57,124 +97,129 @@ foreach(dir IN LISTS MIDASSYS_INCLUDE_DIRS)
   )
 endforeach()
 
-# Link against core, ROOT, and MIDAS libraries
+# Link libraries including MIDAS static libs and CPM header-only targets if available
 target_link_libraries(${PROJECT_NAME}
-    PUBLIC
-        AnalysisPipelineStagesCore::analysis_pipeline_stages_core
-        ROOT::Core
-        ROOT::RIO
-        ROOT::Tree
-        ROOT::Hist
-        spdlog::spdlog
-        nlohmann_json::nlohmann_json
-        ${MIDASSYS_LIB_DIR}/libmfe.a
-        ${MIDASSYS_LIB_DIR}/libmidas.a
+  PUBLIC
+    AnalysisPipelineStagesCore::analysis_pipeline_stages_core
+    ROOT::Core
+    ROOT::RIO
+    ROOT::Tree
+    ROOT::Hist
+    $<$<TARGET_EXISTS:spdlog_header_only>:spdlog_header_only>
+    $<$<TARGET_EXISTS:nlohmann_json_header_only>:nlohmann_json_header_only>
+    $<$<NOT:$<TARGET_EXISTS:spdlog_header_only>>:spdlog::spdlog>
+    $<$<NOT:$<TARGET_EXISTS:nlohmann_json_header_only>>:nlohmann_json::nlohmann_json>
+    ${MIDASSYS_LIB_DIR}/libmfe.a
+    ${MIDASSYS_LIB_DIR}/libmidas.a
 )
 
-# ROOT dictionary generation setup
+# Helper function to gather include dirs from targets for ROOT dictionary
+function(append_target_includes_to_root_dict target_name)
+  get_target_property(INCLUDE_DIRS ${target_name} INTERFACE_INCLUDE_DIRECTORIES)
+  if(INCLUDE_DIRS AND NOT INCLUDE_DIRS STREQUAL "${target_name}_NOTFOUND")
+    foreach(dir IN LISTS INCLUDE_DIRS)
+      if(dir MATCHES "^\\$<BUILD_INTERFACE:(.+)>$")
+        set(actual "${CMAKE_MATCH_1}")
+        if(EXISTS "${actual}")
+          list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${actual}")
+        endif()
+      elseif(NOT dir MATCHES "^\\$")  # Skip other generator expressions
+        if(EXISTS "${dir}")
+          list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
+        endif()
+      endif()
+    endforeach()
+  endif()
+  set(ROOT_DICTIONARY_INCLUDE_OPTIONS ${ROOT_DICTIONARY_INCLUDE_OPTIONS} PARENT_SCOPE)
+endfunction()
+
+# Prepare include options for ROOT dictionary generation
 set(ROOT_LINKDEF ${CMAKE_CURRENT_SOURCE_DIR}/include/LinkDef.h)
 
-# Prepare MIDAS include flags for dictionary generation
-set(MIDAS_INCLUDE_FLAGS "")
+set(ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+# Add MIDAS include dirs
 foreach(dir IN LISTS MIDASSYS_INCLUDE_DIRS)
-  list(APPEND MIDAS_INCLUDE_FLAGS "-I${dir}")
+  list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
 endforeach()
 
-# For ROOT dictionary, only use concrete paths that exist at configure time
-set(ROOT_DICTIONARY_INCLUDE_OPTIONS
-    "-I${CMAKE_CURRENT_SOURCE_DIR}/include"
-    ${MIDAS_INCLUDE_FLAGS}
-)
+# Add include dirs from analysis pipeline core
+append_target_includes_to_root_dict(AnalysisPipelineStagesCore::analysis_pipeline_stages_core)
 
-# Get include dirs from analysis_pipeline_stages_core - handle generator expressions properly
-get_target_property(CORE_INCLUDE_DIRS AnalysisPipelineStagesCore::analysis_pipeline_stages_core INTERFACE_INCLUDE_DIRECTORIES)
-
-if(CORE_INCLUDE_DIRS AND NOT CORE_INCLUDE_DIRS STREQUAL "CORE_INCLUDE_DIRS-NOTFOUND")
-    foreach(dir IN LISTS CORE_INCLUDE_DIRS)
-        # Handle BUILD_INTERFACE generator expressions
-        if(dir MATCHES "^\\$<BUILD_INTERFACE:(.+)>$")
-            set(actual_dir "${CMAKE_MATCH_1}")
-            if(EXISTS "${actual_dir}")
-                list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${actual_dir}")
-            else()
-                message(WARNING "Skipping non-existent core BUILD_INTERFACE path: ${actual_dir}")
-            endif()
-        # Handle regular paths (no generator expressions)
-        elseif(NOT dir MATCHES "^\\$<")
-            if(EXISTS "${dir}")
-                list(APPEND ROOT_DICTIONARY_INCLUDE_OPTIONS "-I${dir}")
-            else()
-                message(WARNING "Skipping non-existent core include path: ${dir}")
-            endif()
-        endif()
-        # Skip INSTALL_INTERFACE and other generator expressions as they're not relevant for build-time dictionary generation
-    endforeach()
-endif()
-
-# ROOT dictionary generation with MIDAS includes and all stage headers
+# Generate ROOT dictionary
 ROOT_GENERATE_DICTIONARY(G__${PROJECT_NAME}
   ${ALL_STAGE_HEADERS}
   LINKDEF ${ROOT_LINKDEF}
-  OPTIONS
-    ${ROOT_DICTIONARY_INCLUDE_OPTIONS}
-    -Wno-inconsistent-missing-override
+  OPTIONS ${ROOT_DICTIONARY_INCLUDE_OPTIONS} -Wno-inconsistent-missing-override
 )
 
-# Add the generated dictionary to the target
+# Add generated dictionary source to the target
 target_sources(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/G__${PROJECT_NAME}.cxx
+  ${CMAKE_CURRENT_BINARY_DIR}/G__${PROJECT_NAME}.cxx
 )
 
-target_include_directories(${PROJECT_NAME}
-    PRIVATE ${CMAKE_CURRENT_BINARY_DIR}  # generated headers
+target_include_directories(${PROJECT_NAME} PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}  # for generated ROOT headers
 )
 
-# Create alias target for CPM compatibility
+# Alias target for easier referencing
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
-
+# Install rules (only if top-level project)
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
-    # Install targets and headers
-    install(TARGETS ${PROJECT_NAME}
-        EXPORT ${PROJECT_NAME}Targets
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
+  install(TARGETS ${PROJECT_NAME}
+    EXPORT ${PROJECT_NAME}Targets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  )
 
-    install(DIRECTORY include/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  if(TARGET spdlog_header_only)
+    install(TARGETS spdlog_header_only
+      EXPORT ${PROJECT_NAME}Targets
+      INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     )
+  endif()
 
-    # Install ROOT dictionary files alongside the library
-    install(FILES
+  if(TARGET nlohmann_json_header_only)
+    install(TARGETS nlohmann_json_header_only
+      EXPORT ${PROJECT_NAME}Targets
+      INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+  endif()
+
+  install(DIRECTORY include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  )
+
+  install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/lib${PROJECT_NAME}.rootmap
     ${CMAKE_CURRENT_BINARY_DIR}/lib${PROJECT_NAME}_rdict.pcm
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    )
+  )
 
-    write_basic_package_version_file(
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-        VERSION ${PROJECT_VERSION}
-        COMPATIBILITY SameMajorVersion
-    )
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+  )
 
-    configure_package_config_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Config.cmake.in"
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
-    )
+  configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Config.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
+  )
 
-    install(EXPORT ${PROJECT_NAME}Targets
-        FILE ${PROJECT_NAME}Targets.cmake
-        NAMESPACE ${PROJECT_NAME}::
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
-    )
+  install(EXPORT ${PROJECT_NAME}Targets
+    FILE ${PROJECT_NAME}Targets.cmake
+    NAMESPACE ${PROJECT_NAME}::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
+  )
 
-    install(FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
-    )
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}"
+  )
 endif()
