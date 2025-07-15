@@ -12,7 +12,7 @@ public:
     ~BaseMidasUnpackerStage() override;
 
     // Receives externally injected input (expects TMEvent inside std::any)
-    void SetInput(std::any input) override;
+    void SetInput(const InputBundle& input) override;
 
     // Run unpacking on the most recent input
     void Process() final override;
